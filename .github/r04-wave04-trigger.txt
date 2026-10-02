@@ -1,1 +1,2 @@
-trigger public Wave04 surrogate competition
+trigger corrected public Wave04 surrogate competition
+catboost_constant_response_fix=402802d27801681a4eb4b63593a3796ff21d6b5c
