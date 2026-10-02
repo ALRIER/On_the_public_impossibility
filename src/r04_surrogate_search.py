@@ -12,6 +12,7 @@ import optuna
 import pandas as pd
 import psutil
 from catboost import CatBoostRegressor
+from xgboost import XGBRegressor
 from scipy.stats import qmc
 from sklearn.decomposition import PCA
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
@@ -210,6 +211,52 @@ class StableCatBoost:
         return Yn * self.scales
 
 
+
+class NormalizedXGBoost:
+    """Tolerance-normalized CPU histogram XGBoost with vector-valued leaves."""
+
+    def __init__(self, params, scales, workers, seed):
+        self.params = dict(params)
+        self.scales = np.asarray(scales, float)
+        self.workers = int(workers)
+        self.seed = int(seed)
+        self.center = None
+        self.model = None
+
+    def fit(self, X, Y):
+        Yn = np.asarray(Y, float) / self.scales
+        self.center = Yn.mean(axis=0)
+        stable = Yn - self.center
+        if not np.isfinite(stable).all():
+            raise RuntimeError("Non-finite normalized XGBoost target.")
+
+        self.model = XGBRegressor(
+            objective="reg:squarederror",
+            tree_method="hist",
+            multi_strategy="multi_output_tree",
+            n_jobs=self.workers,
+            random_state=self.seed,
+            verbosity=0,
+            n_estimators=int(self.params["n_estimators"]),
+            max_depth=int(self.params["max_depth"]),
+            learning_rate=float(self.params["learning_rate"]),
+            min_child_weight=float(self.params["min_child_weight"]),
+            subsample=float(self.params["subsample"]),
+            colsample_bytree=float(self.params["colsample_bytree"]),
+            reg_alpha=float(self.params["reg_alpha"]),
+            reg_lambda=float(self.params["reg_lambda"]),
+            max_bin=int(self.params["max_bin"]),
+        )
+        self.model.fit(np.asarray(X, float), stable)
+        return self
+
+    def predict(self, X):
+        pred = np.asarray(self.model.predict(np.asarray(X, float)), float)
+        if pred.ndim == 1:
+            pred = pred[:, None]
+        return (pred + self.center) * self.scales
+
+
 def suggest(trial, model):
     if model == "extratrees":
         return {
@@ -244,6 +291,18 @@ def suggest(trial, model):
             ),
             "border_count": trial.suggest_categorical("border_count", [64, 128, 254]),
         }
+    if model == "xgboost":
+        return {
+            "n_estimators": trial.suggest_int("n_estimators", 200, 700, step=100),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.15, log=True),
+            "min_child_weight": trial.suggest_float("min_child_weight", 0.5, 20.0, log=True),
+            "subsample": trial.suggest_float("subsample", 0.70, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.70, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-2, 20.0, log=True),
+            "max_bin": trial.suggest_categorical("max_bin", [128, 256]),
+        }
     raise ValueError(model)
 
 
@@ -254,6 +313,8 @@ def build_model(model, params, scales, workers, seed):
         return LatentHGB(params, scales, seed)
     if model == "catboost":
         return StableCatBoost(params, scales, workers, seed)
+    if model == "xgboost":
+        return NormalizedXGBoost(params, scales, workers, seed)
     raise ValueError(model)
 
 
@@ -292,7 +353,7 @@ def load_contract(input_dir: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["extratrees", "hgb", "catboost"], required=True)
+    ap.add_argument("--model", choices=["extratrees", "hgb", "catboost", "xgboost"], required=True)
     ap.add_argument("--input-dir", default="inputs/r04")
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--trials", type=int, default=60)
@@ -302,6 +363,17 @@ def main():
     ap.add_argument("--reserve-ram-gb", type=float, default=1.0)
     ap.add_argument("--ram-per-worker-gb", type=float, default=2.0)
     ap.add_argument("--parallel-trials", type=int, default=2)
+    ap.add_argument(
+        "--max-search-minutes",
+        type=float,
+        default=0.0,
+        help="Optional Optuna search cutoff. Final CV/surface work still runs afterward.",
+    )
+    ap.add_argument(
+        "--resume-study",
+        action="store_true",
+        help="Persist Optuna state in output-dir/optuna.sqlite3 and resume completed trials.",
+    )
     args = ap.parse_args()
 
     input_dir = ROOT / args.input_dir
@@ -350,33 +422,72 @@ def main():
         trial.set_user_attr("fold_q90", [x[1] for x in fold_scores])
         return float(np.mean([x[2] for x in fold_scores]))
 
+    storage = None
+    if args.resume_study:
+        storage = f"sqlite:///{(out / 'optuna.sqlite3').resolve().as_posix()}"
+
     study = optuna.create_study(
+        study_name=f"r04_{args.model}",
         direction="minimize",
+        storage=storage,
+        load_if_exists=bool(storage),
         sampler=optuna.samplers.TPESampler(
             seed=args.seed, multivariate=True, group=True
         ),
     )
-    study.optimize(
-        objective,
-        n_trials=args.trials,
-        n_jobs=search_jobs,
-        gc_after_trial=True,
-    )
-    best = dict(study.best_params)
 
-    trial_rows = []
-    for t in study.trials:
-        trial_rows.append(
-            {
-                "trial": t.number,
-                "state": str(t.state),
-                "objective": t.value,
-                "fold_median": json.dumps(t.user_attrs.get("fold_median", [])),
-                "fold_q90": json.dumps(t.user_attrs.get("fold_q90", [])),
-                **t.params,
-            }
+    def persist_trials(study, _trial=None):
+        trial_rows = []
+        for t in study.trials:
+            trial_rows.append(
+                {
+                    "trial": t.number,
+                    "state": str(t.state),
+                    "objective": t.value,
+                    "fold_median": json.dumps(t.user_attrs.get("fold_median", [])),
+                    "fold_q90": json.dumps(t.user_attrs.get("fold_q90", [])),
+                    **t.params,
+                }
+            )
+        write_csv(out / "optuna_trials.csv", trial_rows)
+        complete = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+        ]
+        if complete:
+            best_trial = min(complete, key=lambda t: float(t.value))
+            (out / "best_params_checkpoint.json").write_text(
+                json.dumps(best_trial.params, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+    completed_before = sum(
+        t.state == optuna.trial.TrialState.COMPLETE for t in study.trials
+    )
+    remaining = max(0, int(args.trials) - int(completed_before))
+    timeout_seconds = (
+        None if args.max_search_minutes <= 0
+        else float(args.max_search_minutes) * 60.0
+    )
+    if remaining:
+        study.optimize(
+            objective,
+            n_trials=remaining,
+            n_jobs=search_jobs,
+            timeout=timeout_seconds,
+            callbacks=[persist_trials],
+            gc_after_trial=True,
         )
-    write_csv(out / "optuna_trials.csv", trial_rows)
+    persist_trials(study)
+
+    complete_trials = [
+        t for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+    ]
+    if not complete_trials:
+        raise RuntimeError("No completed Optuna trials are available.")
+    best_trial = min(complete_trials, key=lambda t: float(t.value))
+    best = dict(best_trial.params)
     (out / "best_params.json").write_text(
         json.dumps(best, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -552,7 +663,8 @@ def main():
             "model": args.model,
             "development_rows": len(dev),
             "lockbox_rows": len(lock),
-            "trials": args.trials,
+            "trials": len(complete_trials),
+            "trials_requested": args.trials,
             "objective": "0.70_median+0.30_q90",
             "best_objective": study.best_value,
             "cv_median": cv_median,
@@ -568,6 +680,10 @@ def main():
             "catboost_stabilization": (
                 "center_per_response+single_global_divisor"
                 if args.model == "catboost" else ""
+            ),
+            "xgboost_strategy": (
+                "hist+multi_output_tree+tolerance_normalized"
+                if args.model == "xgboost" else ""
             ),
         }],
     )
