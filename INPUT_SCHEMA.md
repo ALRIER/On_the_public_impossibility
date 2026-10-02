@@ -26,3 +26,22 @@ Columns:
 Single column `response_id`. These are neutral response IDs eligible for targeted residual acquisition when their predictive-quality gate is satisfied.
 
 No semantic mapping belongs in this repository.
+
+
+## `inputs/r04/screen_map.csv`
+
+Columns:
+
+- `target_id`: opaque target ID (`T###`).
+- `value_response`: associated `Y###` response ID.
+- `lo_response`, `hi_response`: optional interval-response IDs.
+- `lower`, `upper`: numerical acceptance bounds.
+- `rule`: neutral rule code, either `VALUE` or `INTERVAL`.
+
+## `inputs/r04/parameter_bounds.csv`
+
+Columns: `feature_id`, `lower`, `upper`.
+
+## `inputs/r04/residual_targets.csv`
+
+Single column `target_id`, using the opaque `T###` IDs from `screen_map.csv`.
