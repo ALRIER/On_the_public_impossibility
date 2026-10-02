@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: r04-public-wave04
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   OMP_NUM_THREADS: '1'
