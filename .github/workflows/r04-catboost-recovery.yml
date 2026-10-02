@@ -32,6 +32,17 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Validate neutral bundle
         run: python src/validate_neutral_bundle.py --input-dir inputs/r04
+      - name: Smoke CatBoost stabilization
+        run: >
+          python src/r04_surrogate_search.py
+          --model catboost
+          --input-dir inputs/r04
+          --output-dir /tmp/r04-catboost-smoke
+          --trials 1
+          --virtual-points 256
+          --reserve-cpus 1
+          --reserve-ram-gb 2.0
+          --ram-per-worker-gb 1.5
       - name: Run CatBoost
         run: >
           python src/r04_surrogate_search.py
