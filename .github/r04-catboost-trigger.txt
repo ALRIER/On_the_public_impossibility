@@ -1,1 +1,1 @@
-R04 CatBoost recovery trigger — 2026-10-02
+R04 CatBoost stabilized recovery trigger — 2026-10-02
