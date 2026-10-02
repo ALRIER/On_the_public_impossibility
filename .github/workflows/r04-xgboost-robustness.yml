@@ -1,0 +1,61 @@
+name: R04 XGBoost Robustness
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r04-xgboost-trigger.txt"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r04-xgboost-robustness
+  cancel-in-progress: true
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+
+jobs:
+  xgboost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Validate neutral bundle
+        run: python src/validate_neutral_bundle.py --input-dir inputs/r04
+
+      - name: Run XGBoost robustness surrogate
+        run: |
+          python src/r04_surrogate_search.py \
+            --model xgboost \
+            --input-dir inputs/r04 \
+            --output-dir outputs/r04/xgboost \
+            --trials 30 \
+            --virtual-points 65536 \
+            --reserve-cpus 0 \
+            --reserve-ram-gb 1.0 \
+            --ram-per-worker-gb 2.0 \
+            --parallel-trials 1 \
+            --max-search-minutes 180 \
+            --resume-study
+
+      - name: Upload XGBoost evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r04-selection-xgboost
+          path: outputs/r04/xgboost
+          if-no-files-found: warn
+          retention-days: 90
