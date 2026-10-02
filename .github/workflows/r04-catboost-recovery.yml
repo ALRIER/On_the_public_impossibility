@@ -1,0 +1,57 @@
+name: R04 CatBoost recovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/r04-catboost-trigger.txt'
+
+permissions:
+  contents: write
+
+env:
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  VECLIB_MAXIMUM_THREADS: '1'
+  BLIS_NUM_THREADS: '1'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install -r requirements.txt
+      - name: Validate neutral bundle
+        run: python src/validate_neutral_bundle.py --input-dir inputs/r04
+      - name: Run CatBoost
+        run: >
+          python src/r04_surrogate_search.py
+          --model catboost
+          --input-dir inputs/r04
+          --output-dir outputs/r04/catboost
+          --trials 60
+          --virtual-points 65536
+          --reserve-cpus 1
+          --reserve-ram-gb 2.0
+          --ram-per-worker-gb 1.5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r04-catboost-output
+          path: outputs/r04/catboost
+          if-no-files-found: error
+      - name: Commit neutral output
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/r04/catboost
+          git commit -m "Archive R04 CatBoost output" || exit 0
+          git push
