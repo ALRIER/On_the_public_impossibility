@@ -42,13 +42,13 @@ jobs:
             --model xgboost \
             --input-dir inputs/r04 \
             --output-dir outputs/r04/xgboost \
-            --trials 30 \
+            --trials 60 \
             --virtual-points 65536 \
             --reserve-cpus 0 \
             --reserve-ram-gb 1.0 \
             --ram-per-worker-gb 2.0 \
-            --parallel-trials 1 \
-            --max-search-minutes 180 \
+            --parallel-trials 2 \
+            --max-search-minutes 270 \
             --resume-study
 
       - name: Upload XGBoost evidence
