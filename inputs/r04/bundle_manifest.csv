@@ -1,0 +1,2 @@
+schema,development_rows,lockbox_rows,features,responses,profiles,targets,residual_targets,contains_semantic_mapping,contains_source_names,contains_raw_source_data
+neutral_r04_v1,603,64,10,157,8,57,11,false,false,false
