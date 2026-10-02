@@ -40,9 +40,10 @@ jobs:
           --output-dir /tmp/r04-catboost-smoke
           --trials 1
           --virtual-points 256
-          --reserve-cpus 1
-          --reserve-ram-gb 2.0
-          --ram-per-worker-gb 1.5
+          --reserve-cpus 0
+          --reserve-ram-gb 1.0
+          --ram-per-worker-gb 2.0
+          --parallel-trials 2
       - name: Run CatBoost
         run: >
           python src/r04_surrogate_search.py
@@ -51,9 +52,10 @@ jobs:
           --output-dir outputs/r04/catboost
           --trials 60
           --virtual-points 65536
-          --reserve-cpus 1
-          --reserve-ram-gb 2.0
-          --ram-per-worker-gb 1.5
+          --reserve-cpus 0
+          --reserve-ram-gb 1.0
+          --ram-per-worker-gb 2.0
+          --parallel-trials 2
       - uses: actions/upload-artifact@v4
         with:
           name: r04-catboost-output
