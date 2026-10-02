@@ -21,7 +21,7 @@ Columns:
 - `response_id`: one of the `Y###` response IDs.
 - `scale`: strictly positive numerical normalization scale.
 
-## `inputs/r04/residual_ids.csv`
+## `inputs/r04/residual_targets.csv`
 
 Single column `response_id`. These are neutral response IDs eligible for targeted residual acquisition when their predictive-quality gate is satisfied.
 
