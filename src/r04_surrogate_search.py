@@ -148,6 +148,7 @@ class StableCatBoost:
         self.seed = int(seed)
         self.center = None
         self.global_divisor = None
+        self.active_mask = None
         self.model = None
 
     def fit(self, X, Y):
@@ -155,23 +156,34 @@ class StableCatBoost:
         self.center = Yn.mean(axis=0)
         centered = Yn - self.center
 
-        max_abs = float(np.max(np.abs(centered)))
-        if not np.isfinite(max_abs):
+        if not np.isfinite(centered).all():
             raise RuntimeError("Non-finite normalized CatBoost target.")
-        if max_abs == 0.0:
+
+        # CatBoost rejects multi-output training when one or more response
+        # dimensions are constant inside a CV fold. Train only dimensions with
+        # meaningful fold-level variation, then reconstruct constant dimensions
+        # from their normalized training means at prediction time.
+        spread = np.ptp(centered, axis=0)
+        scale_ref = np.maximum(1.0, np.max(np.abs(Yn), axis=0))
+        self.active_mask = spread > (1e-12 * scale_ref)
+        if not np.any(self.active_mask):
             raise RuntimeError("All normalized CatBoost targets are constant.")
 
-        # Bring the largest absolute target to O(10^3) without changing
-        # cross-output weighting: the divisor is scalar, not component-specific.
+        active = centered[:, self.active_mask]
+        max_abs = float(np.max(np.abs(active)))
         self.global_divisor = max(1.0, max_abs / 1000.0)
-        stable = centered / self.global_divisor
+        stable = active / self.global_divisor
 
         if not np.isfinite(stable).all():
             raise RuntimeError("Non-finite stabilized CatBoost target.")
 
+        one_dimensional = stable.shape[1] == 1
+        train_target = stable[:, 0] if one_dimensional else stable
+        loss = "RMSE" if one_dimensional else "MultiRMSE"
+
         self.model = CatBoostRegressor(
-            loss_function="MultiRMSE",
-            eval_metric="MultiRMSE",
+            loss_function=loss,
+            eval_metric=loss,
             iterations=int(self.params["iterations"]),
             depth=int(self.params["depth"]),
             learning_rate=float(self.params["learning_rate"]),
@@ -185,14 +197,16 @@ class StableCatBoost:
             verbose=False,
             allow_writing_files=False,
         )
-        self.model.fit(np.asarray(X, float), stable)
+        self.model.fit(np.asarray(X, float), train_target)
         return self
 
     def predict(self, X):
-        stable = np.asarray(self.model.predict(np.asarray(X, float)), float)
-        if stable.ndim == 1:
-            stable = stable[:, None]
-        Yn = stable * self.global_divisor + self.center
+        active_pred = np.asarray(self.model.predict(np.asarray(X, float)), float)
+        if active_pred.ndim == 1:
+            active_pred = active_pred[:, None]
+        n = active_pred.shape[0]
+        Yn = np.tile(self.center, (n, 1))
+        Yn[:, self.active_mask] = active_pred * self.global_divisor + self.center[self.active_mask]
         return Yn * self.scales
 
 
