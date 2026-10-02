@@ -36,17 +36,38 @@ def write_csv(path: Path, rows: list[dict]):
         writer.writerows(rows)
 
 
-def resource_plan(reserve_cpus=1, reserve_ram_gb=2.0, ram_per_worker_gb=1.5):
+def resource_plan(
+    reserve_cpus=0,
+    reserve_ram_gb=1.0,
+    ram_per_worker_gb=2.0,
+    parallel_trials=2,
+):
     logical = psutil.cpu_count(logical=True) or os.cpu_count() or 1
     mem = psutil.virtual_memory()
     gib = 1024**3
     available = mem.available / gib
-    cpu_capacity = max(1, logical - reserve_cpus)
+
+    cpu_capacity = max(1, logical - max(0, reserve_cpus))
     memory_capacity = max(
         1,
-        int(max(0.0, available - reserve_ram_gb) // max(ram_per_worker_gb, 0.25)),
+        int(max(0.0, available - max(0.0, reserve_ram_gb))
+            // max(ram_per_worker_gb, 0.25)),
     )
+
+    # Full-machine budget for final fits and surface generation.
     workers = max(1, min(cpu_capacity, memory_capacity))
+
+    # During Optuna search, run several trials concurrently while partitioning
+    # the available CPU budget between them. This avoids nested oversubscription.
+    search_jobs = max(
+        1,
+        min(int(max(1, parallel_trials)), cpu_capacity, memory_capacity),
+    )
+    search_workers_per_model = max(
+        1,
+        min(workers, cpu_capacity // search_jobs, memory_capacity // search_jobs),
+    )
+
     return {
         "logical_cpus": logical,
         "total_ram_gb": mem.total / gib,
@@ -55,6 +76,8 @@ def resource_plan(reserve_cpus=1, reserve_ram_gb=2.0, ram_per_worker_gb=1.5):
         "reserve_ram_gb": reserve_ram_gb,
         "ram_per_worker_gb": ram_per_worker_gb,
         "workers": workers,
+        "search_jobs": search_jobs,
+        "search_workers_per_model": search_workers_per_model,
     }
 
 
@@ -261,9 +284,10 @@ def main():
     ap.add_argument("--trials", type=int, default=60)
     ap.add_argument("--virtual-points", type=int, default=65536)
     ap.add_argument("--seed", type=int, default=260923)
-    ap.add_argument("--reserve-cpus", type=int, default=1)
-    ap.add_argument("--reserve-ram-gb", type=float, default=2.0)
-    ap.add_argument("--ram-per-worker-gb", type=float, default=1.5)
+    ap.add_argument("--reserve-cpus", type=int, default=0)
+    ap.add_argument("--reserve-ram-gb", type=float, default=1.0)
+    ap.add_argument("--ram-per-worker-gb", type=float, default=2.0)
+    ap.add_argument("--parallel-trials", type=int, default=2)
     args = ap.parse_args()
 
     input_dir = ROOT / args.input_dir
@@ -282,9 +306,14 @@ def main():
     groups = dev["GROUP_ID"].astype(str).to_numpy()
 
     resources = resource_plan(
-        args.reserve_cpus, args.reserve_ram_gb, args.ram_per_worker_gb
+        args.reserve_cpus,
+        args.reserve_ram_gb,
+        args.ram_per_worker_gb,
+        args.parallel_trials,
     )
     workers = int(resources["workers"])
+    search_jobs = int(resources["search_jobs"])
+    search_workers = int(resources["search_workers_per_model"])
     write_csv(out / "resource_plan.csv", [{**resources, "backend": "CPU"}])
 
     splitter = GroupKFold(n_splits=5)
@@ -294,7 +323,7 @@ def main():
         fold_scores = []
         for fold, (tr, va) in enumerate(splitter.split(X, Y, groups)):
             model = build_model(
-                args.model, params, scales, workers, args.seed + 1009 * fold
+                args.model, params, scales, search_workers, args.seed + 1009 * fold
             )
             model.fit(X.iloc[tr], Y.iloc[tr])
             pred = model.predict(X.iloc[va])
@@ -313,7 +342,12 @@ def main():
             seed=args.seed, multivariate=True, group=True
         ),
     )
-    study.optimize(objective, n_trials=args.trials, gc_after_trial=True)
+    study.optimize(
+        objective,
+        n_trials=args.trials,
+        n_jobs=search_jobs,
+        gc_after_trial=True,
+    )
     best = dict(study.best_params)
 
     trial_rows = []
