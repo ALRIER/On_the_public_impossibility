@@ -1,0 +1,128 @@
+name: R04 Neutral Arbitration
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r04-arbitration-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r04-neutral-arbitration
+  cancel-in-progress: true
+
+jobs:
+  simulate:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout neutral laboratory
+        uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - name: Checkout transient runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+
+      - name: Execute neutral shard
+        shell: bash
+        run: |
+          mkdir -p lab/outputs/r04_arbitration
+          START=$(( ${{ matrix.shard }} * 4 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases lab/inputs/r04_arbitration/cases.csv \
+            --output lab/outputs/r04_arbitration/shard_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 4
+
+      - name: Upload neutral shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: r04-arbitration-${{ matrix.shard }}
+          path: lab/outputs/r04_arbitration/shard_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  aggregate:
+    needs: simulate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r04-arbitration-*
+          path: /tmp/r04
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Aggregate neutral evidence
+        run: |
+          python - <<'PY'
+          import csv, glob
+          from collections import defaultdict
+          from pathlib import Path
+
+          files=sorted(glob.glob('/tmp/r04/shard_*.csv'))
+          rows=[]
+          fields=[]
+          for path in files:
+              with open(path,encoding='utf-8',newline='') as h:
+                  for row in csv.DictReader(h):
+                      rows.append(row)
+                      for k in row:
+                          if k not in fields: fields.append(k)
+          rows.sort(key=lambda r:r['CASE_ID'])
+          out=Path('outputs/r04_arbitration')
+          out.mkdir(parents=True,exist_ok=True)
+          with (out/'results.csv').open('w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader(); w.writerows(rows)
+
+          by=defaultdict(list)
+          for r in rows: by[r['GROUP_ID']].append(r)
+          summary=[]
+          for g,rs in sorted(by.items()):
+              summary.append({
+                  'GROUP_ID':g,
+                  'CASES':len(rs),
+                  'MEAN_CAL_PASS':sum(float(r['CAL_PASS']) for r in rs)/len(rs),
+                  'MEAN_DEV_PASS':sum(float(r['DEV_PASS']) for r in rs)/len(rs),
+                  'MAX_DEV_PASS':max(int(r['DEV_PASS']) for r in rs),
+                  'MEAN_SEP_PASS':sum(float(r['SEP_PASS']) for r in rs)/len(rs),
+                  'FINITE_CASES':sum(r['FINITE_STATE'].lower()=='true' for r in rs),
+              })
+          with (out/'summary.csv').open('w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(summary[0])); w.writeheader(); w.writerows(summary)
+          PY
+
+      - name: Commit neutral outputs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/r04_arbitration
+          git diff --cached --quiet || git commit -m "Archive neutral R04 arbitration evidence"
+          git push origin HEAD:main
