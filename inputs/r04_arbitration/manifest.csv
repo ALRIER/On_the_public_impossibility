@@ -1,0 +1,2 @@
+schema,cases,replicates_per_case,groups,contains_semantic_mapping,contains_model_names,contains_target_names,contains_source_names,true_simulation_requested
+neutral_r04_arbitration_v1,16,8,4,false,false,false,false,true
