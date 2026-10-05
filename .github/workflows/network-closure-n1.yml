@@ -1,0 +1,87 @@
+name: Network Closure N1 Intensive Search
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/network-closure-n1-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: network-closure-n1
+  cancel-in-progress: true
+
+jobs:
+  search:
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout public laboratory
+        uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - name: Checkout private runtime transiently
+        uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+
+      - name: Run N1 shard
+        shell: bash
+        run: |
+          mkdir -p lab/outputs/network_closure_n1_raw
+          START=$(( ${{ matrix.shard }} * 16384 ))
+          python runtime/code/stages/Test3/run_network_structural_closure_n1.py \
+            --start ${START} \
+            --count 16384 \
+            --seed 6032026 \
+            --output lab/outputs/network_closure_n1_raw/shard_${{ matrix.shard }}.csv
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: network-n1-${{ matrix.shard }}
+          path: lab/outputs/network_closure_n1_raw/shard_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  aggregate:
+    needs: search
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: network-n1-*
+          path: /tmp/network_n1
+          merge-multiple: true
+
+      - name: Aggregate neutral N1 evidence
+        run: python src/network_closure_n1_aggregate.py
+
+      - name: Commit compact neutral evidence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/network_closure_n1
+          git diff --cached --quiet || git commit -m "Archive intensive N1 network-closure evidence"
+          git push origin HEAD:main
