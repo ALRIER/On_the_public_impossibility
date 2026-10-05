@@ -1,0 +1,269 @@
+name: R05 Local True-ABM Map
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r05-local-map-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r05-local-true-abm-map
+  cancel-in-progress: true
+
+jobs:
+  stage1:
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout neutral laboratory
+        uses: actions/checkout@v4
+        with:
+          path: lab
+      - name: Checkout transient runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Execute Stage 1 shard
+        shell: bash
+        run: |
+          mkdir -p lab/outputs/r05_local_map
+          START=$(( ${{ matrix.shard }} * 256 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases lab/inputs/r05_local_map/cases_stage1.csv \
+            --output lab/outputs/r05_local_map/stage1_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r05-stage1-${{ matrix.shard }}
+          path: lab/outputs/r05_local_map/stage1_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  stage1_select:
+    needs: stage1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r05-stage1-*
+          path: /tmp/r05_stage1
+          merge-multiple: true
+      - name: Aggregate Stage 1 and select Stage 2
+        run: |
+          python - <<'PY'
+          import csv, glob
+          from collections import defaultdict
+          from pathlib import Path
+
+          inputs=list(csv.DictReader(open('inputs/r05_local_map/cases_stage1.csv',encoding='utf-8')))
+          by_id={r['CASE_ID']:r for r in inputs}
+          raw=[]
+          for p in sorted(glob.glob('/tmp/r05_stage1/stage1_*.csv')):
+              raw.extend(csv.DictReader(open(p,encoding='utf-8')))
+          summary=[]
+          for r in raw:
+              src=by_id[r['CASE_ID']]
+              summary.append({
+                  'CASE_ID':r['CASE_ID'],'GROUP_ID':r['GROUP_ID'],'P00':r['P00'],
+                  'FINITE_STATE':r['FINITE_STATE'],'CAL_PASS':int(r['CAL_PASS']),
+                  'DEV_PASS':int(r['DEV_PASS']),'SEP_PASS':int(r['SEP_PASS']),
+                  **{k:src[k] for k in ['X001','X002','X003','X004','X005','X006','X007','X008','X009','X010']}
+              })
+          summary.sort(key=lambda r:(-int(r['DEV_PASS']),-int(r['SEP_PASS']),-int(r['CAL_PASS']),r['CASE_ID']))
+          out=Path('/tmp/r05_select'); out.mkdir(parents=True,exist_ok=True)
+          fields=list(summary[0])
+          with open(out/'stage1_summary.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader(); w.writerows(summary)
+
+          groups=defaultdict(list)
+          for r in summary: groups[r['GROUP_ID']].append(r)
+          region=[]
+          for g,rs in sorted(groups.items()):
+              region.append({
+                  'GROUP_ID':g,'CASES':len(rs),
+                  'MEAN_DEV_PASS':sum(x['DEV_PASS'] for x in rs)/len(rs),
+                  'MAX_DEV_PASS':max(x['DEV_PASS'] for x in rs),
+                  'COUNT_DEV_GE_38':sum(x['DEV_PASS']>=38 for x in rs),
+                  'COUNT_DEV_GE_40':sum(x['DEV_PASS']>=40 for x in rs),
+                  'MEAN_SEP_PASS':sum(x['SEP_PASS'] for x in rs)/len(rs),
+                  'FINITE_CASES':sum(str(x['FINITE_STATE']).lower()=='true' for x in rs),
+              })
+          with open(out/'stage1_region_summary.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(region[0])); w.writeheader(); w.writerows(region)
+
+          selected=[]
+          seen=set()
+          for g in sorted(groups):
+              for r in groups[g][:4]:
+                  selected.append(r); seen.add(r['CASE_ID'])
+          for r in summary:
+              if len(selected)>=256: break
+              if r['CASE_ID'] not in seen:
+                  selected.append(r); seen.add(r['CASE_ID'])
+
+          stage2=[]
+          for r in selected:
+              src=dict(by_id[r['CASE_ID']])
+              src['REPLICATES']='16'
+              src['SEED_BLOCK']=str(int(src['SEED_BLOCK'])+1000000)
+              stage2.append(src)
+          with open(out/'stage2_cases.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(stage2[0])); w.writeheader(); w.writerows(stage2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r05-stage1-selection
+          path: /tmp/r05_select
+          retention-days: 90
+
+  stage2:
+    needs: stage1_select
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout neutral laboratory
+        uses: actions/checkout@v4
+        with:
+          path: lab
+      - name: Checkout transient runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r05-stage1-selection
+          path: /tmp/r05_select
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Execute Stage 2 shard
+        shell: bash
+        run: |
+          mkdir -p lab/outputs/r05_local_map
+          START=$(( ${{ matrix.shard }} * 16 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases /tmp/r05_select/stage2_cases.csv \
+            --output lab/outputs/r05_local_map/stage2_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 16
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r05-stage2-${{ matrix.shard }}
+          path: lab/outputs/r05_local_map/stage2_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  aggregate:
+    needs: stage2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: r05-stage1-selection
+          path: /tmp/r05_select
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r05-stage2-*
+          path: /tmp/r05_stage2
+          merge-multiple: true
+      - name: Build diagnostic map outputs
+        run: |
+          python - <<'PY'
+          import csv, glob, os
+          from collections import defaultdict
+          from pathlib import Path
+
+          out=Path('outputs/r05_local_map'); out.mkdir(parents=True,exist_ok=True)
+          for name in ['stage1_summary.csv','stage1_region_summary.csv','stage2_cases.csv']:
+              (out/name).write_bytes((Path('/tmp/r05_select')/name).read_bytes())
+
+          rows=[]; fields=[]
+          for p in sorted(glob.glob('/tmp/r05_stage2/stage2_*.csv')):
+              with open(p,encoding='utf-8',newline='') as h:
+                  for r in csv.DictReader(h):
+                      rows.append(r)
+                      for k in r:
+                          if k not in fields: fields.append(k)
+          rows.sort(key=lambda r:r['CASE_ID'])
+          with open(out/'stage2_results.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader(); w.writerows(rows)
+
+          reduced=[]
+          for r in rows:
+              reduced.append({
+                  'CASE_ID':r['CASE_ID'],'GROUP_ID':r['GROUP_ID'],'P00':r['P00'],
+                  'FINITE_STATE':r['FINITE_STATE'],'CAL_PASS':int(r['CAL_PASS']),
+                  'DEV_PASS':int(r['DEV_PASS']),'SEP_PASS':int(r['SEP_PASS'])
+              })
+          reduced.sort(key=lambda r:(-r['DEV_PASS'],-r['SEP_PASS'],-r['CAL_PASS'],r['CASE_ID']))
+          with open(out/'stage2_summary.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(reduced[0])); w.writeheader(); w.writerows(reduced)
+
+          groups=defaultdict(list)
+          for r in reduced: groups[r['GROUP_ID']].append(r)
+          region=[]
+          for g,rs in sorted(groups.items()):
+              region.append({
+                  'GROUP_ID':g,'CASES':len(rs),
+                  'MEAN_DEV_PASS':sum(x['DEV_PASS'] for x in rs)/len(rs),
+                  'MAX_DEV_PASS':max(x['DEV_PASS'] for x in rs),
+                  'COUNT_DEV_GE_38':sum(x['DEV_PASS']>=38 for x in rs),
+                  'COUNT_DEV_GE_40':sum(x['DEV_PASS']>=40 for x in rs),
+                  'MEAN_SEP_PASS':sum(x['SEP_PASS'] for x in rs)/len(rs),
+                  'MAX_SEP_PASS':max(x['SEP_PASS'] for x in rs),
+                  'FINITE_CASES':sum(str(x['FINITE_STATE']).lower()=='true' for x in rs),
+              })
+          with open(out/'stage2_region_summary.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(region[0])); w.writeheader(); w.writerows(region)
+
+          case_inputs={r['CASE_ID']:r for r in csv.DictReader(open(out/'stage2_cases.csv',encoding='utf-8'))}
+          top=[]
+          for r in reduced[:64]:
+              z=dict(r); z.update({k:case_inputs[r['CASE_ID']][k] for k in ['X001','X002','X003','X004','X005','X006','X007','X008','X009','X010']})
+              top.append(z)
+          with open(out/'top_candidates.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(top[0])); w.writeheader(); w.writerows(top)
+
+          with open(out/'run_manifest.csv','w',encoding='utf-8',newline='') as h:
+              fields=['RUN_ID','STAGE1_CASES','STAGE1_REPS','STAGE2_CASES','STAGE2_REPS','TOTAL_TRUE_ABM_REPLICATIONS','ROLE']
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader()
+              w.writerow({'RUN_ID':os.environ.get('GITHUB_RUN_ID',''),'STAGE1_CASES':8192,'STAGE1_REPS':4,'STAGE2_CASES':256,'STAGE2_REPS':16,'TOTAL_TRUE_ABM_REPLICATIONS':36864,'ROLE':'developmental_local_perturbation_map'})
+          PY
+      - name: Commit neutral diagnostic outputs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/r05_local_map
+          git diff --cached --quiet || git commit -m "Archive R05 local true-ABM diagnostic map"
+          git push origin HEAD:main
