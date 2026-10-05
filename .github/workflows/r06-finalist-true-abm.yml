@@ -1,0 +1,234 @@
+name: R06 Finalist True-ABM
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r06-finalist-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r06-finalist-true-abm
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python src/r06_prepare.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-design
+          path: inputs/r06_finalist
+          retention-days: 90
+
+  stage1:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lab
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-design
+          path: lab/inputs/r06_finalist
+      - uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Run Stage 1
+        run: |
+          mkdir -p lab/outputs/r06_finalist
+          START=$(( ${{ matrix.shard }} * 512 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases lab/inputs/r06_finalist/stage1_cases.csv \
+            --output lab/outputs/r06_finalist/s1_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 512
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-s1-${{ matrix.shard }}
+          path: lab/outputs/r06_finalist/s1_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  select2:
+    needs: stage1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-design
+          path: /tmp/design
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r06-s1-*
+          path: /tmp/s1
+          merge-multiple: true
+      - run: python src/r06_select.py 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-selection2
+          path: /tmp/sel2
+          retention-days: 90
+
+  stage2:
+    needs: select2
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lab
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-selection2
+          path: /tmp/sel2
+      - uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Run Stage 2
+        run: |
+          mkdir -p lab/outputs/r06_finalist
+          START=$(( ${{ matrix.shard }} * 32 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases /tmp/sel2/stage2_cases.csv \
+            --output lab/outputs/r06_finalist/s2_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-s2-${{ matrix.shard }}
+          path: lab/outputs/r06_finalist/s2_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  select3:
+    needs: stage2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-selection2
+          path: /tmp/sel2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r06-s2-*
+          path: /tmp/s2
+          merge-multiple: true
+      - run: python src/r06_select.py 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-selection3
+          path: /tmp/sel3
+          retention-days: 90
+
+  stage3:
+    needs: select3
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lab
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-selection3
+          path: /tmp/sel3
+      - uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Run Stage 3
+        run: |
+          mkdir -p lab/outputs/r06_finalist
+          START=$(( ${{ matrix.shard }} * 8 ))
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases /tmp/sel3/stage3_cases.csv \
+            --output lab/outputs/r06_finalist/s3_${{ matrix.shard }}.csv \
+            --start ${START} \
+            --count 8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r06-s3-${{ matrix.shard }}
+          path: lab/outputs/r06_finalist/s3_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  aggregate:
+    needs: stage3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-design
+          path: /tmp/design
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-selection2
+          path: /tmp/sel2
+      - uses: actions/download-artifact@v4
+        with:
+          name: r06-selection3
+          path: /tmp/sel3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r06-s3-*
+          path: /tmp/s3
+          merge-multiple: true
+      - run: python src/r06_aggregate.py
+      - name: Commit neutral outputs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/r06_finalist
+          git diff --cached --quiet || git commit -m "Archive R06 finalist true-ABM evidence"
+          git push origin HEAD:main
