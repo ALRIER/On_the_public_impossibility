@@ -1,0 +1,41 @@
+name: R05 Sync Neutral Inputs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r05-sync-trigger.txt"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout neutral laboratory
+        uses: actions/checkout@v4
+        with:
+          path: lab
+          fetch-depth: 0
+      - name: Checkout source runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - name: Copy neutral R05 inputs
+        run: |
+          mkdir -p lab/inputs/r05_local_map
+          cp runtime/exports/public_compute/r05_local_map/cases_stage1.csv lab/inputs/r05_local_map/cases_stage1.csv
+          cp runtime/exports/public_compute/r05_local_map/manifest.csv lab/inputs/r05_local_map/manifest.csv
+      - name: Commit neutral inputs
+        working-directory: lab
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add inputs/r05_local_map
+          git diff --cached --quiet || git commit -m "Sync neutral R05 local-map inputs"
+          git push origin HEAD:main
