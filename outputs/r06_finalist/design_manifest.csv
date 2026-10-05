@@ -1,0 +1,2 @@
+schema,centers,radii,stage1_cases,stage1_reps,stage2_cases,stage2_reps,stage3_cases,stage3_reps
+r06_finalist_v1,6,0.005;0.01;0.02;0.04,24576,4,768,24,96,64
