@@ -1,0 +1,2 @@
+schema,selection_rule,candidates,replications_per_candidate,total_replications,seed_policy,adaptive_search
+r07_final_confirmation_v1,R06_STAGE3_FINITE_AND_DEV_GE40_AND_CAL_GE4_AND_SEP_GE4,22,256,5632,R06_seed_block_plus_9000000,false
