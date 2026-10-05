@@ -1,0 +1,2 @@
+schema,cases,centers,radius_levels,points_per_block,stage1_reps,stage2_target,stage2_reps,design
+r05_local_map_v1,8192,4,4,512,4,256,16,scrambled_sobol_multiscale_local
