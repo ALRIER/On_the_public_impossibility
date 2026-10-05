@@ -1,0 +1,167 @@
+name: R07 Final Test3 Confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/r07-final-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r07-final-test3-confirmation
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Freeze confirmation inputs
+        run: python src/r07_prepare_final.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r07-final-design
+          path: inputs/r07_final_confirmation
+          retention-days: 90
+
+  confirm:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 22
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lab
+      - uses: actions/download-artifact@v4
+        with:
+          name: r07-final-design
+          path: lab/inputs/r07_final_confirmation
+      - uses: actions/checkout@v4
+        with:
+          repository: ALRIER/On_the_Impossibility_of_Central_Planning
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/code/requirements.txt
+      - name: Execute frozen candidate
+        run: |
+          mkdir -p lab/outputs/r07_final_confirmation
+          python runtime/code/stages/Test3/run_neutral_arbitration_cases.py \
+            --cases lab/inputs/r07_final_confirmation/cases.csv \
+            --output lab/outputs/r07_final_confirmation/case_${{ matrix.shard }}.csv \
+            --start ${{ matrix.shard }} \
+            --count 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r07-final-${{ matrix.shard }}
+          path: lab/outputs/r07_final_confirmation/case_${{ matrix.shard }}.csv
+          retention-days: 90
+
+  aggregate:
+    needs: confirm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: r07-final-design
+          path: /tmp/r07_design
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r07-final-*
+          path: /tmp/r07_results
+          merge-multiple: true
+      - name: Aggregate final confirmation
+        run: |
+          python - <<'PY'
+          import csv, glob, os
+          from pathlib import Path
+
+          rows=[]; fields=[]
+          for p in sorted(glob.glob('/tmp/r07_results/case_*.csv')):
+              with open(p,encoding='utf-8',newline='') as h:
+                  for r in csv.DictReader(h):
+                      rows.append(r)
+                      for k in r:
+                          if k not in fields: fields.append(k)
+          rows.sort(key=lambda r:r['CASE_ID'])
+
+          out=Path('outputs/r07_final_confirmation')
+          out.mkdir(parents=True,exist_ok=True)
+          with open(out/'results.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader(); w.writerows(rows)
+
+          summary=[]
+          for r in rows:
+              summary.append({
+                  'CASE_ID':r['CASE_ID'],
+                  'GROUP_ID':r['GROUP_ID'],
+                  'P00':r['P00'],
+                  'FINITE_STATE':r['FINITE_STATE'],
+                  'CAL_PASS':int(r['CAL_PASS']),
+                  'DEV_PASS':int(r['DEV_PASS']),
+                  'SEP_PASS':int(r['SEP_PASS']),
+                  'DEV_GE_40':int(r['DEV_PASS'])>=40,
+                  'CAL_GE_4':int(r['CAL_PASS'])>=4,
+                  'SEP_GE_4':int(r['SEP_PASS'])>=4,
+                  'CONFIRMATION_PASS':(
+                      str(r['FINITE_STATE']).lower()=='true'
+                      and int(r['DEV_PASS'])>=40
+                      and int(r['CAL_PASS'])>=4
+                      and int(r['SEP_PASS'])>=4
+                  )
+              })
+          with open(out/'summary.csv','w',encoding='utf-8',newline='') as h:
+              w=csv.DictWriter(h,fieldnames=list(summary[0])); w.writeheader(); w.writerows(summary)
+
+          confirmed=sum(bool(r['CONFIRMATION_PASS']) for r in summary)
+          dev40=sum(bool(r['DEV_GE_40']) for r in summary)
+          finite=sum(str(r['FINITE_STATE']).lower()=='true' for r in summary)
+          with open(out/'adjudication.csv','w',encoding='utf-8',newline='') as h:
+              fields=['RUN_ID','CANDIDATES','REPS_PER_CANDIDATE','TOTAL_REPLICATIONS','FINITE_CASES','DEV_GE40_CASES','CONFIRMED_CASES','BEST_DEV_PASS','MEAN_DEV_PASS','MEAN_CAL_PASS','MEAN_SEP_PASS','ROLE']
+              w=csv.DictWriter(h,fieldnames=fields); w.writeheader()
+              w.writerow({
+                  'RUN_ID':os.environ.get('GITHUB_RUN_ID',''),
+                  'CANDIDATES':len(summary),
+                  'REPS_PER_CANDIDATE':256,
+                  'TOTAL_REPLICATIONS':len(summary)*256,
+                  'FINITE_CASES':finite,
+                  'DEV_GE40_CASES':dev40,
+                  'CONFIRMED_CASES':confirmed,
+                  'BEST_DEV_PASS':max(r['DEV_PASS'] for r in summary),
+                  'MEAN_DEV_PASS':sum(r['DEV_PASS'] for r in summary)/len(summary),
+                  'MEAN_CAL_PASS':sum(r['CAL_PASS'] for r in summary)/len(summary),
+                  'MEAN_SEP_PASS':sum(r['SEP_PASS'] for r in summary)/len(summary),
+                  'ROLE':'frozen_final_test3_confirmation'
+              })
+          for src,name in [
+              ('/tmp/r07_design/cases.csv','frozen_cases.csv'),
+              ('/tmp/r07_design/manifest.csv','design_manifest.csv')
+          ]:
+              (out/name).write_bytes(Path(src).read_bytes())
+          PY
+      - name: Commit final neutral evidence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/r07_final_confirmation
+          git diff --cached --quiet || git commit -m "Archive R07 final Test3 confirmation"
+          git push origin HEAD:main
