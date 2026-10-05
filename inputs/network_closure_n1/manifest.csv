@@ -1,0 +1,2 @@
+schema,design,dimensions,total_points,shards,points_per_shard,sobol_seed,public_variables,semantic_mapping_public,promotion_target,next_stage_auto_launch
+network_closure_n1_v1,scrambled_sobol_unit_cube,6,1048576,64,16384,6032026,Z001-Z006,false,2048,false
