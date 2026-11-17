@@ -43,7 +43,14 @@ jobs:
               path=pathlib.Path('raw')/name
               for attempt in range(4):
                   try:
-                      with urllib.request.urlopen(req(api+'/actions/artifacts/'+str(a['id'])+'/zip'),timeout=120) as h:path.write_bytes(h.read())
+                      try:
+                          opener=urllib.request.build_opener(type('NoRedirect',(urllib.request.HTTPRedirectHandler,),{'redirect_request':lambda self,request,fp,code,msg,headers,newurl:None})())
+                          opener.open(req(api+'/actions/artifacts/'+str(a['id'])+'/zip'),timeout=60)
+                          raise RuntimeError('Expected artifact redirect')
+                      except urllib.error.HTTPError as err:
+                          if err.code not in (302,303,307,308):raise
+                          signed_url=err.headers['Location']
+                      with urllib.request.urlopen(signed_url,timeout=120) as h:path.write_bytes(h.read())
                       break
                   except Exception:
                       if attempt==3:raise
